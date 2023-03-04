@@ -9,11 +9,11 @@ import (
 )
 
 // RequestHandlerFunc is a continuation for the next task to execute in the pipeline
-type RequestHandlerFunc func() (interface{}, error)
+type RequestHandlerFunc func() (any, error)
 
 // PipelineBehavior is a Pipeline behavior for wrapping the inner handler.
 type PipelineBehavior interface {
-	Handle(ctx context.Context, request interface{}, next RequestHandlerFunc) (interface{}, error)
+	Handle(ctx context.Context, request any, next RequestHandlerFunc) (any, error)
 }
 
 type RequestHandler[TRequest any, TResponse any] interface {
@@ -24,9 +24,9 @@ type NotificationHandler[TNotification any] interface {
 	Handle(ctx context.Context, notification TNotification) error
 }
 
-var requestHandlersRegistrations = map[reflect.Type]interface{}{}
-var notificationHandlersRegistrations = map[reflect.Type][]interface{}{}
-var pipelineBehaviours []interface{} = []interface{}{}
+var requestHandlersRegistrations = map[reflect.Type]any{}
+var notificationHandlersRegistrations = map[reflect.Type][]any{}
+var pipelineBehaviours []any = []any{}
 
 type Unit struct{}
 
@@ -69,7 +69,7 @@ func RegisterNotificationHandler[TEvent any](handler NotificationHandler[TEvent]
 
 	handlers, exist := notificationHandlersRegistrations[eventType]
 	if !exist {
-		notificationHandlersRegistrations[eventType] = []interface{}{handler}
+		notificationHandlersRegistrations[eventType] = []any{handler}
 		return nil
 	}
 
@@ -85,7 +85,7 @@ func RegisterNotificationHandlers[TEvent any](handlers ...NotificationHandler[TE
 	}
 
 	for _, handler := range handlers {
-		err := RegisterNotificationHandler[TEvent](handler)
+		err := RegisterNotificationHandler(handler)
 		if err != nil {
 			return err
 		}
@@ -95,11 +95,11 @@ func RegisterNotificationHandlers[TEvent any](handlers ...NotificationHandler[TE
 }
 
 func ClearRequestRegistrations() {
-	requestHandlersRegistrations = map[reflect.Type]interface{}{}
+	requestHandlersRegistrations = map[reflect.Type]any{}
 }
 
 func ClearNotificationRegistrations() {
-	notificationHandlersRegistrations = map[reflect.Type][]interface{}{}
+	notificationHandlersRegistrations = map[reflect.Type][]any{}
 }
 
 // Send the request to its corresponding request handler.
@@ -120,7 +120,7 @@ func Send[TRequest any, TResponse any](ctx context.Context, request TRequest) (T
 	if len(pipelineBehaviours) > 0 {
 		var reversPipes = reversOrder(pipelineBehaviours)
 
-		var lastHandler RequestHandlerFunc = func() (interface{}, error) {
+		var lastHandler RequestHandlerFunc = func() (any, error) {
 			return handlerValue.Handle(ctx, request)
 		}
 
@@ -128,7 +128,7 @@ func Send[TRequest any, TResponse any](ctx context.Context, request TRequest) (T
 			pipeValue := pipe
 			nexValue := next
 
-			var handlerFunc RequestHandlerFunc = func() (interface{}, error) {
+			var handlerFunc RequestHandlerFunc = func() (any, error) {
 				return pipeValue.Handle(ctx, request, nexValue)
 			}
 
@@ -180,8 +180,8 @@ func Publish[TNotification any](ctx context.Context, notification TNotification)
 	return nil
 }
 
-func reversOrder(values []interface{}) []interface{} {
-	var reverseValues []interface{}
+func reversOrder(values []any) []any {
+	var reverseValues []any
 
 	for i := len(values) - 1; i >= 0; i-- {
 		reverseValues = append(reverseValues, values[i])

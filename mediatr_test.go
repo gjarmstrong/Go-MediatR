@@ -3,11 +3,12 @@ package mediatr
 import (
 	"context"
 	"fmt"
+	"testing"
+
 	"github.com/goccy/go-reflect"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 var testData []string
@@ -171,7 +172,7 @@ func (t *MediatRTests) Test_RegisterNotificationHandlers_Should_Register_Multipl
 // notifications could have zero or more handlers
 func (t *MediatRTests) Test_Publish_Should_Pass_If_No_Handler_Registered() {
 	defer cleanup()
-	err := Publish[*NotificationTest](context.Background(), &NotificationTest{})
+	err := Publish(context.Background(), &NotificationTest{})
 	assert.Nil(t, err)
 }
 
@@ -186,7 +187,7 @@ func (t *MediatRTests) Test_Publish_Should_Return_Error_If_Handler_Returns_Error
 	if errRegister != nil {
 		t.Error(errRegister)
 	}
-	err := Publish[*NotificationTest](context.Background(), &NotificationTest{})
+	err := Publish(context.Background(), &NotificationTest{})
 	assert.Containsf(t, err.Error(), expectedErr, "expected error containing %q, got %s", expectedErr, err)
 }
 
@@ -200,7 +201,7 @@ func (t *MediatRTests) Test_Publish_Should_Dispatch_Notification_To_All_Handlers
 	}
 
 	notification := &NotificationTest{}
-	err := Publish[*NotificationTest](context.Background(), notification)
+	err := Publish(context.Background(), notification)
 	assert.Nil(t, err)
 	assert.True(t, notification.Processed)
 }
@@ -251,7 +252,7 @@ func (t *MediatRTests) Test_Clear_Notifications_Registrations() {
 	require.NoError(t, errRegister)
 
 	ClearNotificationRegistrations()
-	
+
 	count := len(notificationHandlersRegistrations)
 	assert.Equal(t, 0, count)
 }
