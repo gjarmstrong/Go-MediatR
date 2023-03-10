@@ -1,3 +1,3 @@
-module github.com/mehdihadeli/go-mediatr
+module github.com/gjarmstrong/go-mediatr
 
 go 1.20
