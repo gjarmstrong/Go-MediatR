@@ -2,65 +2,84 @@ package mediatr
 
 import (
 	"context"
-
-	"github.com/ahmetb/go-linq/v3"
-	"github.com/goccy/go-reflect"
-	"github.com/pkg/errors"
+	"errors"
+	"fmt"
+	"reflect"
 )
 
-// RequestHandlerFunc is a continuation for the next task to execute in the pipeline
-type RequestHandlerFunc func() (any, error)
+type RequestHandlerFunc[TReq, TRes any] func(context.Context, TReq) (TRes, error)
 
-// PipelineBehavior is a Pipeline behavior for wrapping the inner handler.
-type PipelineBehavior interface {
-	Handle(ctx context.Context, request any, next RequestHandlerFunc) (any, error)
+func (f RequestHandlerFunc[TReq, TRes]) Handle(ctx context.Context, req any) (any, error) {
+	return f(ctx, req.(TReq))
 }
 
-type RequestHandler[TRequest any, TResponse any] interface {
-	Handle(ctx context.Context, request TRequest) (TResponse, error)
+type PipelineFunc func(context.Context, any) (any, error)
+
+func (f PipelineFunc) Handle(ctx context.Context, req any) (any, error) {
+	return f(ctx, req)
+}
+
+type PipelineHandler interface {
+	Handle(context.Context, any) (any, error)
+}
+
+type Pipeline func(PipelineFunc) PipelineFunc
+
+var requests = map[reflect.Type]any{}
+var pipeline Pipeline = func(rhf PipelineFunc) PipelineFunc { return rhf }
+
+func RegisterHandlerFunc[TReq, TRes any](f RequestHandlerFunc[TReq, TRes]) error {
+	var req TReq
+	rt := reflect.TypeOf(req)
+	_, exists := requests[rt]
+	if exists {
+		return errors.New("handler func already registered")
+	}
+
+	requests[rt] = f
+	return nil
+}
+
+func RegisterPipeline(behaviors ...Pipeline) {
+	pipeline = func(outer Pipeline, others ...Pipeline) Pipeline {
+		return func(next PipelineFunc) PipelineFunc {
+			for i := len(others) - 1; i >= 0; i-- { // reverse
+				next = others[i](next)
+			}
+			return outer(next)
+		}
+	}(pipeline, behaviors...)
+}
+
+func Send[TReq, TRes any](ctx context.Context, req TReq) (TRes, error) {
+	handler, ok := requests[reflect.TypeOf(req)]
+	if !ok {
+		return *new(TRes), fmt.Errorf("no handler for request %T", req)
+	}
+
+	_, ok = handler.(RequestHandlerFunc[TReq, TRes])
+	if !ok {
+		return *new(TRes), fmt.Errorf("handler for request %T is not a Handler", req)
+	}
+
+	ph, ok := handler.(PipelineHandler)
+	if !ok {
+		return *new(TRes), fmt.Errorf("handler for request %T is not a pipeline handler", req)
+	}
+
+	res, err := pipeline(ph.Handle)(ctx, req)
+	if err != nil {
+		return *new(TRes), err
+	}
+
+	return res.(TRes), nil
 }
 
 type NotificationHandler[TNotification any] interface {
 	Handle(ctx context.Context, notification TNotification) error
 }
 
-var requestHandlersRegistrations = map[reflect.Type]any{}
 var notificationHandlersRegistrations = map[reflect.Type][]any{}
-var pipelineBehaviours []any = []any{}
-
-type Unit struct{}
-
-// RegisterRequestHandler register the request handler to mediatr registry.
-func RegisterRequestHandler[TRequest any, TResponse any](handler RequestHandler[TRequest, TResponse]) error {
-	var request TRequest
-	requestType := reflect.TypeOf(request)
-
-	_, exist := requestHandlersRegistrations[requestType]
-	if exist {
-		// each request in request/response strategy should have just one handler
-		return errors.Errorf("registered handler already exists in the registry for message %s", requestType.String())
-	}
-
-	requestHandlersRegistrations[requestType] = handler
-
-	return nil
-}
-
-// RegisterRequestPipelineBehaviors register the request behaviors to mediatr registry.
-func RegisterRequestPipelineBehaviors(behaviours ...PipelineBehavior) error {
-	for _, behavior := range behaviours {
-		behaviorType := reflect.TypeOf(behavior)
-
-		existsPipe := existsPipeType(behaviorType)
-		if existsPipe {
-			return errors.Errorf("registered behavior already exists in the registry.")
-		}
-
-		pipelineBehaviours = append(pipelineBehaviours, behavior)
-	}
-
-	return nil
-}
 
 // RegisterNotificationHandler register the notification handler to mediatr registry.
 func RegisterNotificationHandler[TEvent any](handler NotificationHandler[TEvent]) error {
@@ -95,64 +114,11 @@ func RegisterNotificationHandlers[TEvent any](handlers ...NotificationHandler[TE
 }
 
 func ClearRequestRegistrations() {
-	requestHandlersRegistrations = map[reflect.Type]any{}
+	requests = map[reflect.Type]any{}
 }
 
 func ClearNotificationRegistrations() {
 	notificationHandlersRegistrations = map[reflect.Type][]any{}
-}
-
-// Send the request to its corresponding request handler.
-func Send[TRequest any, TResponse any](ctx context.Context, request TRequest) (TResponse, error) {
-	requestType := reflect.TypeOf(request)
-	var response TResponse
-	handler, ok := requestHandlersRegistrations[requestType]
-	if !ok {
-		// request-response strategy should have exactly one handler and if we can't find a corresponding handler, we should return an error
-		return *new(TResponse), errors.Errorf("no handler for request %T", request)
-	}
-
-	handlerValue, ok := handler.(RequestHandler[TRequest, TResponse])
-	if !ok {
-		return *new(TResponse), errors.Errorf("handler for request %T is not a Handler", request)
-	}
-
-	if len(pipelineBehaviours) > 0 {
-		var reversPipes = reversOrder(pipelineBehaviours)
-
-		var lastHandler RequestHandlerFunc = func() (any, error) {
-			return handlerValue.Handle(ctx, request)
-		}
-
-		aggregateResult := linq.From(reversPipes).AggregateWithSeedT(lastHandler, func(next RequestHandlerFunc, pipe PipelineBehavior) RequestHandlerFunc {
-			pipeValue := pipe
-			nexValue := next
-
-			var handlerFunc RequestHandlerFunc = func() (any, error) {
-				return pipeValue.Handle(ctx, request, nexValue)
-			}
-
-			return handlerFunc
-		})
-
-		v := aggregateResult.(RequestHandlerFunc)
-		response, err := v()
-
-		if err != nil {
-			return *new(TResponse), errors.Wrap(err, "error handling request")
-		}
-
-		return response.(TResponse), nil
-	} else {
-		res, err := handlerValue.Handle(ctx, request)
-		if err != nil {
-			return *new(TResponse), errors.Wrap(err, "error handling request")
-		}
-
-		response = res
-	}
-
-	return response, nil
 }
 
 // Publish the notification event to its corresponding notification handler.
@@ -168,34 +134,14 @@ func Publish[TNotification any](ctx context.Context, notification TNotification)
 	for _, handler := range handlers {
 		handlerValue, ok := handler.(NotificationHandler[TNotification])
 		if !ok {
-			return errors.Errorf("handler for notification %T is not a Handler", notification)
+			return fmt.Errorf("handler for notification %T is not a Handler", notification)
 		}
 
 		err := handlerValue.Handle(ctx, notification)
 		if err != nil {
-			return errors.Wrap(err, "error handling notification")
+			return fmt.Errorf("error handling notification: %w", err)
 		}
 	}
 
 	return nil
-}
-
-func reversOrder(values []any) []any {
-	var reverseValues []any
-
-	for i := len(values) - 1; i >= 0; i-- {
-		reverseValues = append(reverseValues, values[i])
-	}
-
-	return reverseValues
-}
-
-func existsPipeType(p reflect.Type) bool {
-	for _, pipe := range pipelineBehaviours {
-		if reflect.TypeOf(pipe) == p {
-			return true
-		}
-	}
-
-	return false
 }
