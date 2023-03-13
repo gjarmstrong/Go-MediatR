@@ -75,30 +75,32 @@ func Send[TReq, TRes any](ctx context.Context, req TReq) (TRes, error) {
 	return res.(TRes), nil
 }
 
-type NotificationHandler[TNotification any] interface {
-	Handle(ctx context.Context, notification TNotification) error
+func ClearRequestRegistrations() {
+	requests = map[reflect.Type]any{}
 }
 
-var notificationHandlersRegistrations = map[reflect.Type][]any{}
+type NotificationHandlerFunc[T any] func(ctx context.Context, event T) error
+
+var notifications = map[reflect.Type][]any{}
 
 // RegisterNotificationHandler register the notification handler to mediatr registry.
-func RegisterNotificationHandler[TEvent any](handler NotificationHandler[TEvent]) error {
-	var event TEvent
+func RegisterNotificationHandler[T any](handler NotificationHandlerFunc[T]) error {
+	var event T
 	eventType := reflect.TypeOf(event)
 
-	handlers, exist := notificationHandlersRegistrations[eventType]
+	handlers, exist := notifications[eventType]
 	if !exist {
-		notificationHandlersRegistrations[eventType] = []any{handler}
+		notifications[eventType] = []any{handler}
 		return nil
 	}
 
-	notificationHandlersRegistrations[eventType] = append(handlers, handler)
+	notifications[eventType] = append(handlers, handler)
 
 	return nil
 }
 
 // RegisterNotificationHandlers register the notification handlers to mediatr registry.
-func RegisterNotificationHandlers[TEvent any](handlers ...NotificationHandler[TEvent]) error {
+func RegisterNotificationHandlers[T any](handlers ...NotificationHandlerFunc[T]) error {
 	if len(handlers) == 0 {
 		return errors.New("no handlers provided")
 	}
@@ -113,35 +115,28 @@ func RegisterNotificationHandlers[TEvent any](handlers ...NotificationHandler[TE
 	return nil
 }
 
-func ClearRequestRegistrations() {
-	requests = map[reflect.Type]any{}
-}
-
-func ClearNotificationRegistrations() {
-	notificationHandlersRegistrations = map[reflect.Type][]any{}
-}
-
 // Publish the notification event to its corresponding notification handler.
-func Publish[TNotification any](ctx context.Context, notification TNotification) error {
-	eventType := reflect.TypeOf(notification)
-
-	handlers, ok := notificationHandlersRegistrations[eventType]
+func Publish[T any](ctx context.Context, event T) error {
+	handlers, ok := notifications[reflect.TypeOf(event)]
 	if !ok {
-		// notification strategy should have zero or more handlers, so it should run without any error if we can't find a corresponding handler
 		return nil
 	}
 
 	for _, handler := range handlers {
-		handlerValue, ok := handler.(NotificationHandler[TNotification])
+		fn, ok := handler.(NotificationHandlerFunc[T])
 		if !ok {
-			return fmt.Errorf("handler for notification %T is not a Handler", notification)
+			return fmt.Errorf("handler for notification %T is not a Handler", event)
 		}
 
-		err := handlerValue.Handle(ctx, notification)
+		err := fn(ctx, event)
 		if err != nil {
 			return fmt.Errorf("error handling notification: %w", err)
 		}
 	}
 
 	return nil
+}
+
+func ClearNotificationRegistrations() {
+	notifications = map[reflect.Type][]any{}
 }
