@@ -7,72 +7,98 @@ import (
 	"reflect"
 )
 
-type RequestHandlerFunc[TReq, TRes any] func(context.Context, TReq) (TRes, error)
+var (
+	requests = map[reflect.Type]any{}
+	pipeline Middleware
+)
 
-func (f RequestHandlerFunc[TReq, TRes]) Handle(ctx context.Context, req any) (any, error) {
-	return f(ctx, req.(TReq))
+type Request[T any] interface {
+	Request(T)
 }
 
-type PipelineFunc func(context.Context, any) (any, error)
-
-func (f PipelineFunc) Handle(ctx context.Context, req any) (any, error) {
-	return f(ctx, req)
+type RequestHandler[R Request[T], T any] interface {
+	Handle(context.Context, R) (T, error)
 }
 
-type PipelineHandler interface {
-	Handle(context.Context, any) (any, error)
-}
+func RegisterRequestHandler[R Request[T], T any](rh RequestHandler[R, T]) error {
+	var (
+		req R
+		rt  = reflect.TypeOf(req)
+	)
 
-type Pipeline func(PipelineFunc) PipelineFunc
-
-var requests = map[reflect.Type]any{}
-var pipeline Pipeline = func(rhf PipelineFunc) PipelineFunc { return rhf }
-
-func RegisterHandlerFunc[TReq, TRes any](f RequestHandlerFunc[TReq, TRes]) error {
-	var req TReq
-	rt := reflect.TypeOf(req)
 	_, exists := requests[rt]
 	if exists {
-		return errors.New("handler func already registered")
+		return fmt.Errorf("handler for request %T already exists", req)
 	}
 
-	requests[rt] = f
+	requests[rt] = rh
+
 	return nil
 }
 
-func RegisterPipeline(behaviors ...Pipeline) {
-	pipeline = func(outer Pipeline, others ...Pipeline) Pipeline {
-		return func(next PipelineFunc) PipelineFunc {
+type RequestHandlerFunc[R Request[T], T any] func(context.Context, R) (T, error)
+
+func (f RequestHandlerFunc[R, T]) Handle(ctx context.Context, req R) (T, error) {
+	return f(ctx, req)
+}
+
+func RegisterHandlerFunc[R Request[T], T any](f func(context.Context, R) (T, error)) error {
+	return RegisterRequestHandler(RequestHandlerFunc[R, T](f))
+}
+
+type MiddlewareHandler interface {
+	Handle(context.Context, any) (any, error)
+}
+
+type MiddlewareFunc func(context.Context, any) (any, error)
+
+func (f MiddlewareFunc) Handle(ctx context.Context, req any) (any, error) {
+	return f(ctx, req)
+}
+
+type Middleware func(MiddlewareFunc) MiddlewareFunc
+
+func RegisterMiddleware(mw ...Middleware) {
+	pipeline = func(outer Middleware, others ...Middleware) Middleware {
+		return func(next MiddlewareFunc) MiddlewareFunc {
 			for i := len(others) - 1; i >= 0; i-- { // reverse
 				next = others[i](next)
 			}
+
+			if outer == nil {
+				return next
+			}
+
 			return outer(next)
 		}
-	}(pipeline, behaviors...)
+	}(pipeline, mw...)
 }
 
-func Send[TReq, TRes any](ctx context.Context, req TReq) (TRes, error) {
+func Send[R Request[T], T any](ctx context.Context, req R) (T, error) {
 	handler, ok := requests[reflect.TypeOf(req)]
 	if !ok {
-		return *new(TRes), fmt.Errorf("no handler for request %T", req)
+		return *new(T), fmt.Errorf("no handler for request %T", req)
 	}
 
-	_, ok = handler.(RequestHandlerFunc[TReq, TRes])
+	rh, ok := handler.(RequestHandler[R, T])
 	if !ok {
-		return *new(TRes), fmt.Errorf("handler for request %T is not a Handler", req)
+		return *new(T), fmt.Errorf("handler for request %T is not a Handler", req)
 	}
 
-	ph, ok := handler.(PipelineHandler)
-	if !ok {
-		return *new(TRes), fmt.Errorf("handler for request %T is not a pipeline handler", req)
+	if pipeline == nil {
+		return rh.Handle(ctx, req)
 	}
 
-	res, err := pipeline(ph.Handle)(ctx, req)
+	fn := func(ctx context.Context, req any) (res any, err error) {
+		return rh.Handle(ctx, req.(R))
+	}
+
+	res, err := pipeline(fn)(ctx, req)
 	if err != nil {
-		return *new(TRes), err
+		return *new(T), err
 	}
 
-	return res.(TRes), nil
+	return res.(T), nil
 }
 
 func ClearRequestRegistrations() {

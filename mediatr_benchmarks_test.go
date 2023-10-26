@@ -5,25 +5,30 @@ import (
 	"testing"
 )
 
-type RequestTest struct{ Data string }
-type ResponseTest struct{ Data string }
+type testRequest struct{}
+
+func (testRequest) Request(*testResponse) {}
+
+type testResponse struct{}
+
+type testRequestHandler struct{}
+
+func (testRequestHandler) Handle(context.Context, testRequest) (*testResponse, error) {
+	return &testResponse{}, nil
+}
 
 func Benchmark_Send(b *testing.B) {
 	ClearRequestRegistrations()
 
-	fn := func() RequestHandlerFunc[RequestTest, ResponseTest] {
-		return func(ctx context.Context, a RequestTest) (ResponseTest, error) { return ResponseTest(a), nil }
-	}
-
-	errRegister := RegisterHandlerFunc(fn())
-	if errRegister != nil {
-		b.Error(errRegister)
+	err := RegisterRequestHandler(testRequestHandler{})
+	if err != nil {
+		b.Error(err)
 	}
 
 	b.ResetTimer()
 	ctx := context.Background()
 	for i := 0; i < b.N; i++ {
-		_, err := Send[RequestTest, ResponseTest](ctx, RequestTest{Data: "test"})
+		_, err := Send(ctx, testRequest{})
 		if err != nil {
 			b.Error(err)
 		}
